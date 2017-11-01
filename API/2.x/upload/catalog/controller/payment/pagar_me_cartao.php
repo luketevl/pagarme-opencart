@@ -28,7 +28,6 @@ class ControllerPaymentPagarMeCartao extends Controller
         $data['text_wait'] = $this->language->get('text_wait');
         $data['text_information'] = $this->config->get('pagar_me_cartao_text_information');
         $data['url'] = $this->url->link('payment/pagar_me_cartao/confirm', '', 'SSL');
-        $data['url2'] = $this->url->link('payment/pagar_me_cartao/error', '', 'SSL');
 
         /* Parcelas */
         Pagarme::setApiKey($this->config->get('pagar_me_cartao_api'));
@@ -74,90 +73,6 @@ class ControllerPaymentPagarMeCartao extends Controller
         $this->model_checkout_order->addOrderHistory($this->session->data['order_id'], $this->config->get('pagar_me_cartao_order_processing'), $comentario, true);
 
         $this->response->redirect($this->url->link('checkout/success'));
-    }
-
-    public function error()
-    {
-
-
-        $this->load->model('checkout/order');
-
-        $this->model_checkout_order->confirm($this->session->data['order_id'], $this->config->get('pagar_me_cartao_order_refused'));
-
-        if (isset($this->session->data['order_id'])) {
-            $this->cart->clear();
-
-            unset($this->session->data['shipping_method']);
-            unset($this->session->data['shipping_methods']);
-            unset($this->session->data['payment_method']);
-            unset($this->session->data['payment_methods']);
-            unset($this->session->data['guest']);
-            unset($this->session->data['comment']);
-            unset($this->session->data['order_id']);
-            unset($this->session->data['coupon']);
-            unset($this->session->data['reward']);
-            unset($this->session->data['voucher']);
-            unset($this->session->data['vouchers']);
-        }
-
-        $this->language->load('payment/pagar_me_cartao');
-
-        $this->document->setTitle($this->language->get('heading_title'));
-
-        $data['breadcrumbs'] = array();
-
-        $data['breadcrumbs'][] = array(
-            'href' => $this->url->link('common/home'),
-            'text' => $this->language->get('text_home'),
-            'separator' => false
-        );
-
-        $data['breadcrumbs'][] = array(
-            'href' => $this->url->link('checkout/cart'),
-            'text' => $this->language->get('text_basket'),
-            'separator' => $this->language->get('text_separator')
-        );
-
-        $data['breadcrumbs'][] = array(
-            'href' => $this->url->link('checkout/checkout', '', 'SSL'),
-            'text' => $this->language->get('text_checkout'),
-            'separator' => $this->language->get('text_separator')
-        );
-
-        $data['breadcrumbs'][] = array(
-            'href' => $this->url->link('payment/cielo_message'),
-            'text' => $this->language->get('text_no_success'),
-            'separator' => $this->language->get('text_separator')
-        );
-
-        $data['heading_title'] = $this->language->get('heading_title');
-
-        if ($this->customer->isLogged()) {
-            $data['text_message'] = sprintf($this->language->get('text_customer'), $this->url->link('account/order', '', 'SSL'), $this->url->link('information/contact'));
-        } else {
-            $data['text_message'] = sprintf($this->language->get('text_guest'), $this->url->link('information/contact'));
-        }
-
-        $data['button_continue'] = $this->language->get('button_continue');
-
-        $data['continue'] = $this->url->link('common/home');
-
-        if (file_exists(DIR_TEMPLATE . $this->config->get('config_template') . '/template/payment/pagar_me_cartao_message.tpl')) {
-            $this->template = $this->config->get('config_template') . '/template/payment/pagar_me_cartao_message.tpl';
-        } else {
-            $this->template = 'default/template/payment/pagar_me_cartao_message.tpl';
-        }
-
-        $this->children = array(
-            'common/column_left',
-            'common/column_right',
-            'common/content_top',
-            'common/content_bottom',
-            'common/footer',
-            'common/header'
-        );
-
-        $this->response->setOutput($this->render());
     }
 
     public function callback()
@@ -230,6 +145,7 @@ class ControllerPaymentPagarMeCartao extends Controller
             'card_hash' => $this->request->post['card_hash'],
             'installments' => $chosen_installments,
             'postback_url' => HTTP_SERVER . 'index.php?route=payment/pagar_me_cartao/callback',
+            'async' => $this->config->get('pagar_me_cartao_async'),
             "customer" => array(
                 "name" => $customer_name,
                 "document_number" => $this->request->post['cpf_customer'],
@@ -252,12 +168,19 @@ class ControllerPaymentPagarMeCartao extends Controller
             'metadata' => array(
                 'id_pedido' => $order_info['order_id'],
                 'loja' => $this->config->get('config_name'),
-            )));
+            )
+        ));
 
         $json = array();
+
         try{
             $transaction->charge();
+        }catch(Exception $e){
+            $this->log->write('Erro Pagar.me cartão: ' . $e->getMessage());
+            $json['error'] = $e->getMessage();
+        }
 
+        if($transaction->status == 'processing' || $transaction->status == 'paid'){
             $this->load->model('payment/pagar_me_cartao');
             $this->model_payment_pagar_me_cartao->insertInterestRate($order_info['order_id'], $interest_amount);
             $this->model_payment_pagar_me_cartao->updateOrderAmount($order_info['order_id'], ($amount/100));
@@ -265,12 +188,9 @@ class ControllerPaymentPagarMeCartao extends Controller
             $this->model_payment_pagar_me_cartao->addTransactionId($this->session->data['order_id'], $transaction->id, $chosen_installments, $this->request->post['bandeira']);
 
             $this->log->write('Pagar.me Transaction: '.$transaction->id. ' | Status: '.$transaction->status.' | Pedido: '.$order_info['order_id']);
-
             $json['success'] = true;
-
-        }catch(Exception $e){
-            $this->log->write('Erro Pagar.me cartão: ' . $e->getMessage());
-            $json['error'] = $e->getMessage();
+        }else{
+            $json['error'] = "Não foi possível realizar uma transação nesse cartão de crédito.";
         }
 
         $this->response->setOutput(json_encode($json));
